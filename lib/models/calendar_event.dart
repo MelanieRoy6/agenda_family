@@ -17,13 +17,6 @@ class CalendarEvent {
 
   Duration get duration => end.difference(start);
 
-  bool isOwnedBy(String? userEmail) =>
-      userEmail != null &&
-      creatorEmail != null &&
-      creatorEmail!.toLowerCase() == userEmail.toLowerCase();
-
-  bool get canDelete => id != null && calendarId != null;
-
   @override
   String toString() =>
       'CalendarEvent(${title ?? 'sans titre'}, $start → $end, créateur: $creatorEmail)';

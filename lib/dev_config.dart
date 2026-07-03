@@ -7,7 +7,7 @@ import 'models/member_availability.dart';
 // Mettre kDevMode = false pour réactiver l'authentification Google et
 // l'API Calendar réelle avant la mise en production.
 // ─────────────────────────────────────────────────────────────────────────────
-const bool kDevMode = true;
+const bool kDevMode = false;
 
 // ─── Identité fictive ────────────────────────────────────────────────────────
 

@@ -100,28 +100,6 @@ class CalendarService {
     }
   }
 
-  /// Supprime un événement du calendrier [calendarId].
-  ///
-  /// Lance [CalendarServiceException] en cas d'erreur API.
-  Future<void> deleteEvent({
-    required String calendarId,
-    required String eventId,
-  }) async {
-    try {
-      await _api.events.delete(calendarId, eventId);
-    } on DetailedApiRequestError catch (e) {
-      throw CalendarServiceException(
-        'Erreur lors de la suppression (${e.status}) : ${e.message}',
-        cause: e,
-      );
-    } catch (e) {
-      throw CalendarServiceException(
-        'Impossible de supprimer l\'événement : $e',
-        cause: e,
-      );
-    }
-  }
-
   /// Interroge l'API FreeBusy (conservé pour usage futur).
   Future<Map<String, CalendarAvailability>> fetchFamilyAvailability({
     required List<String> emails,

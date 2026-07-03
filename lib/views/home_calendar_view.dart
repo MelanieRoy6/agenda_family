@@ -23,6 +23,8 @@ const _kMemberColors = [
   Color(0xFF1ABC9C),
 ];
 
+enum _CalendarView { month, week, year }
+
 // ─── écran principal ──────────────────────────────────────────────────────────
 
 class HomeCalendarView extends StatefulWidget {
@@ -35,7 +37,8 @@ class HomeCalendarView extends StatefulWidget {
 class _HomeCalendarViewState extends State<HomeCalendarView> {
   late DateTime _focusedDay;
   late DateTime _selectedDay;
-  CalendarFormat _format = CalendarFormat.month;
+  _CalendarView _view = _CalendarView.month;
+  CalendarFormat _calFormat = CalendarFormat.month;
   List<String> _calendarIds = const [];
 
   @override
@@ -90,10 +93,54 @@ class _HomeCalendarViewState extends State<HomeCalendarView> {
     );
   }
 
+  void _loadYear(int year) {
+    if (_calendarIds.isEmpty) return;
+    context.read<AvailabilityNotifier>().loadAvailability(
+      calendarIds: _calendarIds,
+      start: DateTime(year, 1, 1),
+      end: DateTime(year, 12, 31, 23, 59, 59),
+    );
+  }
+
+  void _cycleView() {
+    final next = switch (_view) {
+      _CalendarView.month => _CalendarView.week,
+      _CalendarView.week  => _CalendarView.year,
+      _CalendarView.year  => _CalendarView.month,
+    };
+    setState(() {
+      _view = next;
+      if (next == _CalendarView.week) _calFormat = CalendarFormat.week;
+      if (next == _CalendarView.month) _calFormat = CalendarFormat.month;
+    });
+    if (next == _CalendarView.year) {
+      _loadYear(_focusedDay.year);
+    } else if (_view == _CalendarView.year) {
+      _loadMonth(_focusedDay);
+    }
+  }
+
+  (IconData, String) get _viewToggle => switch (_view) {
+        _CalendarView.month => (Icons.view_week, 'Vue semaine'),
+        _CalendarView.week  => (Icons.calendar_view_month, 'Vue annuelle'),
+        _CalendarView.year  => (Icons.calendar_month, 'Vue mois'),
+      };
+
   @override
   Widget build(BuildContext context) {
-    final currentUserEmail =
-        context.watch<AvailabilityNotifier>().currentUserEmail;
+    final members = context.watch<AvailabilityNotifier>().availabilities;
+
+    final Map<DateTime, List<int>> dayMemberIndices = {};
+    for (var i = 0; i < members.length; i++) {
+      final seen = <DateTime>{};
+      for (final event in members[i].events) {
+        final local = event.start.toLocal();
+        final day = DateTime(local.year, local.month, local.day);
+        if (seen.add(day)) dayMemberIndices.putIfAbsent(day, () => []).add(i);
+      }
+    }
+
+    final (toggleIcon, toggleTooltip) = _viewToggle;
 
     return Scaffold(
       appBar: AppBar(
@@ -118,43 +165,61 @@ class _HomeCalendarViewState extends State<HomeCalendarView> {
             onPressed: _showFamilyMembers,
           ),
           IconButton(
-            icon: Icon(_format == CalendarFormat.month
-                ? Icons.view_week
-                : Icons.calendar_month),
-            tooltip: _format == CalendarFormat.month
-                ? 'Vue semaine'
-                : 'Vue mois',
-            onPressed: () => setState(() {
-              _format = _format == CalendarFormat.month
-                  ? CalendarFormat.week
-                  : CalendarFormat.month;
-            }),
+            icon: Icon(toggleIcon),
+            tooltip: toggleTooltip,
+            onPressed: _cycleView,
+          ),
+          IconButton(
+            icon: const Icon(Icons.refresh_rounded),
+            tooltip: 'Actualiser',
+            onPressed: () => _view == _CalendarView.year
+                ? _loadYear(_focusedDay.year)
+                : _loadMonth(_focusedDay),
           ),
         ],
       ),
-      body: Column(
-        children: [
-          _buildCalendar(context),
-          const Divider(height: 1, thickness: 1),
-          Expanded(
-            child: _DayTimeline(
+      body: _view == _CalendarView.year
+          ? _YearView(
+              year: _focusedDay.year,
               selectedDay: _selectedDay,
-              currentUserEmail: currentUserEmail,
+              dayMemberIndices: dayMemberIndices,
+              onDaySelected: (day) {
+                setState(() {
+                  _selectedDay = day;
+                  _focusedDay = day;
+                  _view = _CalendarView.month;
+                  _calFormat = CalendarFormat.month;
+                });
+                _loadMonth(day);
+              },
+              onYearChanged: (year) {
+                setState(() => _focusedDay =
+                    DateTime(year, _focusedDay.month, 1));
+                _loadYear(year);
+              },
+            )
+          : Column(
+              children: [
+                _buildCalendar(context, dayMemberIndices),
+                const Divider(height: 1, thickness: 1),
+                Expanded(child: _DayTimeline(selectedDay: _selectedDay)),
+              ],
             ),
-          ),
-        ],
-      ),
       bottomNavigationBar: _AddEventBar(onTap: _onAddEventTapped),
     );
   }
 
-  Widget _buildCalendar(BuildContext context) {
+  Widget _buildCalendar(
+    BuildContext context,
+    Map<DateTime, List<int>> dayMemberIndices,
+  ) {
     final cs = Theme.of(context).colorScheme;
+
     return TableCalendar(
       firstDay: DateTime(2020),
       lastDay: DateTime(2030),
       focusedDay: _focusedDay,
-      calendarFormat: _format,
+      calendarFormat: _calFormat,
       availableCalendarFormats: const {
         CalendarFormat.month: 'Mois',
         CalendarFormat.week: 'Semaine',
@@ -168,7 +233,35 @@ class _HomeCalendarViewState extends State<HomeCalendarView> {
         setState(() => _focusedDay = focused);
         _loadMonth(focused);
       },
-      onFormatChanged: (fmt) => setState(() => _format = fmt),
+      onFormatChanged: (fmt) => setState(() => _calFormat = fmt),
+      eventLoader: (day) {
+        final key = DateTime(day.year, day.month, day.day);
+        return dayMemberIndices[key] ?? const [];
+      },
+      calendarBuilders: CalendarBuilders(
+        markerBuilder: (context, day, events) {
+          if (events.isEmpty) return null;
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 4),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: events.take(6).map((e) {
+                final color =
+                    _kMemberColors[(e as int) % _kMemberColors.length];
+                return Container(
+                  width: 5,
+                  height: 5,
+                  margin: const EdgeInsets.symmetric(horizontal: 1),
+                  decoration: BoxDecoration(
+                    color: color,
+                    shape: BoxShape.circle,
+                  ),
+                );
+              }).toList(),
+            ),
+          );
+        },
+      ),
       headerStyle: const HeaderStyle(
         formatButtonVisible: false,
         titleCentered: true,
@@ -184,6 +277,7 @@ class _HomeCalendarViewState extends State<HomeCalendarView> {
         ),
         todayTextStyle: TextStyle(color: cs.onPrimaryContainer),
         selectedTextStyle: TextStyle(color: cs.onPrimary),
+        markersMaxCount: 0, // on gère les marqueurs via markerBuilder
       ),
     );
   }
@@ -193,11 +287,9 @@ class _HomeCalendarViewState extends State<HomeCalendarView> {
 
 class _DayTimeline extends StatelessWidget {
   final DateTime selectedDay;
-  final String? currentUserEmail;
 
   const _DayTimeline({
     required this.selectedDay,
-    required this.currentUserEmail,
   });
 
   @override
@@ -230,7 +322,6 @@ class _DayTimeline extends StatelessWidget {
             child: _TimelineGrid(
               selectedDay: selectedDay,
               members: members,
-              currentUserEmail: currentUserEmail,
             ),
           ),
         ),
@@ -332,12 +423,10 @@ class _MemberNamesHeader extends StatelessWidget {
 class _TimelineGrid extends StatelessWidget {
   final DateTime selectedDay;
   final List<MemberAvailability> members;
-  final String? currentUserEmail;
 
   const _TimelineGrid({
     required this.selectedDay,
     required this.members,
-    required this.currentUserEmail,
   });
 
   @override
@@ -356,7 +445,6 @@ class _TimelineGrid extends StatelessWidget {
                 events: _eventsForDay(member.events),
                 selectedDay: selectedDay,
                 memberName: member.displayName,
-                currentUserEmail: currentUserEmail,
               ),
             );
           }),
@@ -412,14 +500,12 @@ class _MemberColumn extends StatelessWidget {
   final List<CalendarEvent> events;
   final DateTime selectedDay;
   final String memberName;
-  final String? currentUserEmail;
 
   const _MemberColumn({
     required this.color,
     required this.events,
     required this.selectedDay,
     required this.memberName,
-    required this.currentUserEmail,
   });
 
   @override
@@ -454,7 +540,6 @@ class _MemberColumn extends StatelessWidget {
                 dayStart: dayStart,
                 color: color,
                 memberName: memberName,
-                currentUserEmail: currentUserEmail,
               )),
         ],
       ),
@@ -520,14 +605,12 @@ class _EventBlock extends StatelessWidget {
   final DateTime dayStart;
   final Color color;
   final String memberName;
-  final String? currentUserEmail;
 
   const _EventBlock({
     required this.event,
     required this.dayStart,
     required this.color,
     required this.memberName,
-    required this.currentUserEmail,
   });
 
   @override
@@ -547,11 +630,6 @@ class _EventBlock extends StatelessWidget {
     final height =
         (durationMin / 60.0 * _kHourHeight).clamp(4.0, double.infinity);
 
-    // L'icône poubelle s'affiche seulement si l'utilisateur est le créateur
-    // ET que l'événement possède un id et un calendarId (supprimable).
-    final canDelete =
-        event.canDelete && event.isOwnedBy(currentUserEmail);
-
     return Positioned(
       top: top,
       left: 3,
@@ -564,124 +642,88 @@ class _EventBlock extends StatelessWidget {
         ),
         clipBehavior: Clip.hardEdge,
         child: height >= 20
-            ? Stack(
-                children: [
-                  // Contenu central : icône + titre
-                  Padding(
-                    padding: EdgeInsets.only(
-                      left: 5,
-                      right: canDelete ? 18 : 5,
-                    ),
-                    child: Align(
-                      alignment: Alignment.center,
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Image.asset(
-                            'icon/indisponible.png',
-                            width: 13,
-                            height: 13,
-                            fit: BoxFit.contain,
-                          ),
-                          const SizedBox(width: 4),
-                          Flexible(
-                            child: Text(
-                              event.title ?? _firstName(memberName),
-                              style: const TextStyle(
-                                fontSize: 10,
-                                color: Colors.white,
-                                fontWeight: FontWeight.w600,
-                                letterSpacing: 0.1,
-                              ),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
+            ? Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 5),
+                child: Align(
+                  alignment: Alignment.center,
+                  child: height >= 38
+                          ? Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Image.asset(
+                                      'icon/indisponible.png',
+                                      width: 11,
+                                      height: 11,
+                                      fit: BoxFit.contain,
+                                    ),
+                                    const SizedBox(width: 3),
+                                    Flexible(
+                                      child: Text(
+                                        _firstName(memberName),
+                                        style: const TextStyle(
+                                          fontSize: 10,
+                                          color: Colors.white,
+                                          fontWeight: FontWeight.w700,
+                                        ),
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 2),
+                                const Text(
+                                  'Indisponible',
+                                  style: TextStyle(
+                                    fontSize: 8,
+                                    color: Colors.white70,
+                                    fontWeight: FontWeight.w400,
+                                  ),
+                                  maxLines: 1,
+                                ),
+                              ],
+                            )
+                          : Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Image.asset(
+                                  'icon/indisponible.png',
+                                  width: 11,
+                                  height: 11,
+                                  fit: BoxFit.contain,
+                                ),
+                                const SizedBox(width: 3),
+                                Flexible(
+                                  child: Text(
+                                    _firstName(memberName),
+                                    style: const TextStyle(
+                                      fontSize: 10,
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                              ],
                             ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-
-                  // Icône poubelle en haut à droite — visible seulement
-                  // si l'utilisateur connecté est le créateur de l'événement.
-                  if (canDelete)
-                    Positioned(
-                      top: 2,
-                      right: 2,
-                      child: GestureDetector(
-                        behavior: HitTestBehavior.opaque,
-                        onTap: () => _confirmDelete(context),
-                        child: Padding(
-                          padding: const EdgeInsets.all(2),
-                          child: Image.asset(
-                            'icon/poubelle.png',
-                            width: 14,
-                            height: 14,
-                            fit: BoxFit.contain,
-                          ),
-                        ),
-                      ),
-                    ),
-                ],
+                ),
               )
             : null,
       ),
     );
   }
 
-  Future<void> _confirmDelete(BuildContext context) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Supprimer l\'événement'),
-        content: Text(
-          'Voulez-vous vraiment supprimer « ${event.title ?? 'cet événement'} » ?',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text('Annuler'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(true),
-            style: TextButton.styleFrom(foregroundColor: Colors.red),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Image.asset(
-                  'icon/poubelle.png',
-                  width: 16,
-                  height: 16,
-                  fit: BoxFit.contain,
-                ),
-                const SizedBox(width: 6),
-                const Text('Supprimer'),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-
-    if (confirmed == true && context.mounted) {
-      final success =
-          await context.read<AvailabilityNotifier>().deleteEvent(event);
-      if (!success && context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Impossible de supprimer l\'événement.'),
-            backgroundColor: Colors.red,
-            duration: Duration(seconds: 3),
-          ),
-        );
-      }
-    }
-  }
-
   static String _firstName(String displayName) {
     final atIndex = displayName.indexOf('@');
-    final name = atIndex > 0 ? displayName.substring(0, atIndex) : displayName;
+    final name =
+        atIndex > 0 ? displayName.substring(0, atIndex) : displayName;
     final spaceIndex = name.indexOf(' ');
     return spaceIndex > 0 ? name.substring(0, spaceIndex) : name;
   }
@@ -913,6 +955,252 @@ class _MemberTile extends StatelessWidget {
               ],
             ),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+// ─── vue annuelle ─────────────────────────────────────────────────────────────
+
+class _YearView extends StatelessWidget {
+  final int year;
+  final DateTime selectedDay;
+  final Map<DateTime, List<int>> dayMemberIndices;
+  final void Function(DateTime) onDaySelected;
+  final void Function(int) onYearChanged;
+
+  const _YearView({
+    required this.year,
+    required this.selectedDay,
+    required this.dayMemberIndices,
+    required this.onDaySelected,
+    required this.onYearChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final theme = Theme.of(context);
+
+    return Column(
+      children: [
+        // En-tête avec navigation annuelle
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              IconButton(
+                icon: const Icon(Icons.chevron_left_rounded),
+                onPressed: () => onYearChanged(year - 1),
+              ),
+              Text(
+                '$year',
+                style: theme.textTheme.titleLarge?.copyWith(
+                  fontWeight: FontWeight.w700,
+                  color: cs.onSurface,
+                ),
+              ),
+              IconButton(
+                icon: const Icon(Icons.chevron_right_rounded),
+                onPressed: () => onYearChanged(year + 1),
+              ),
+            ],
+          ),
+        ),
+        const Divider(height: 1),
+        Expanded(
+          child: ListView.builder(
+            padding: const EdgeInsets.all(8),
+            itemCount: 6, // 6 rangées de 2 mois
+            itemBuilder: (context, row) {
+              final m1 = row * 2 + 1;
+              final m2 = row * 2 + 2;
+              return Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: _MiniMonth(
+                      year: year,
+                      month: m1,
+                      selectedDay: selectedDay,
+                      dayMemberIndices: dayMemberIndices,
+                      onDaySelected: onDaySelected,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: _MiniMonth(
+                      year: year,
+                      month: m2,
+                      selectedDay: selectedDay,
+                      dayMemberIndices: dayMemberIndices,
+                      onDaySelected: onDaySelected,
+                    ),
+                  ),
+                ],
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+// ─── mini calendrier mensuel (vue annuelle) ───────────────────────────────────
+
+class _MiniMonth extends StatelessWidget {
+  final int year;
+  final int month;
+  final DateTime selectedDay;
+  final Map<DateTime, List<int>> dayMemberIndices;
+  final void Function(DateTime) onDaySelected;
+
+  static const _kDayLabels = ['L', 'M', 'M', 'J', 'V', 'S', 'D'];
+  static const _kMonthNames = [
+    'Janvier', 'Février', 'Mars', 'Avril', 'Mai', 'Juin',
+    'Juillet', 'Août', 'Septembre', 'Octobre', 'Novembre', 'Décembre',
+  ];
+
+  const _MiniMonth({
+    required this.year,
+    required this.month,
+    required this.selectedDay,
+    required this.dayMemberIndices,
+    required this.onDaySelected,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final today = DateTime.now();
+    final firstDay = DateTime(year, month, 1);
+    final daysInMonth = DateTime(year, month + 1, 0).day;
+    // Lundi = 1 → offset 0, Dimanche = 7 → offset 6
+    final startOffset = firstDay.weekday - 1;
+    final totalCells = startOffset + daysInMonth;
+    final totalRows = (totalCells / 7).ceil();
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.all(6),
+      decoration: BoxDecoration(
+        border: Border.all(color: cs.outlineVariant.withAlpha(80)),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // Nom du mois
+          Padding(
+            padding: const EdgeInsets.only(bottom: 4),
+            child: Text(
+              _kMonthNames[month - 1],
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+                color: cs.primary,
+              ),
+            ),
+          ),
+
+          // En-têtes des jours
+          Row(
+            children: _kDayLabels.map((label) {
+              return Expanded(
+                child: Text(
+                  label,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 9,
+                    fontWeight: FontWeight.w600,
+                    color: cs.onSurfaceVariant,
+                  ),
+                ),
+              );
+            }).toList(),
+          ),
+
+          const SizedBox(height: 2),
+
+          // Grille des jours
+          ...List.generate(totalRows, (row) {
+            return Row(
+              children: List.generate(7, (col) {
+                final cellIndex = row * 7 + col;
+                final dayNum = cellIndex - startOffset + 1;
+
+                if (dayNum < 1 || dayNum > daysInMonth) {
+                  return const Expanded(child: SizedBox(height: 22));
+                }
+
+                final date = DateTime(year, month, dayNum);
+                final memberIndices = dayMemberIndices[date] ?? const [];
+                final isToday = date.year == today.year &&
+                    date.month == today.month &&
+                    date.day == today.day;
+                final isSelected = date.year == selectedDay.year &&
+                    date.month == selectedDay.month &&
+                    date.day == selectedDay.day;
+
+                return Expanded(
+                  child: GestureDetector(
+                    onTap: () => onDaySelected(date),
+                    child: Container(
+                      height: 26,
+                      decoration: BoxDecoration(
+                        color: isSelected
+                            ? cs.primary
+                            : isToday
+                                ? cs.primaryContainer
+                                : null,
+                        shape: BoxShape.circle,
+                      ),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Text(
+                            '$dayNum',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              fontSize: 9,
+                              fontWeight: FontWeight.w500,
+                              color: isSelected
+                                  ? cs.onPrimary
+                                  : isToday
+                                      ? cs.onPrimaryContainer
+                                      : cs.onSurface,
+                            ),
+                          ),
+                          if (memberIndices.isNotEmpty)
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: memberIndices.take(3).map((i) {
+                                return Container(
+                                  width: 3,
+                                  height: 3,
+                                  margin: const EdgeInsets.symmetric(
+                                      horizontal: 0.5),
+                                  decoration: BoxDecoration(
+                                    color: isSelected
+                                        ? cs.onPrimary.withAlpha(180)
+                                        : _kMemberColors[
+                                            i % _kMemberColors.length],
+                                    shape: BoxShape.circle,
+                                  ),
+                                );
+                              }).toList(),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ),
+                );
+              }),
+            );
+          }),
         ],
       ),
     );

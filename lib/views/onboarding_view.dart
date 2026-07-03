@@ -4,7 +4,7 @@ import 'package:provider/provider.dart';
 
 import '../services/google_auth_service.dart';
 import '../services/prefs_service.dart';
-import 'home_calendar_view.dart';
+import 'group_setup_view.dart';
 
 enum _Step { welcome, signingIn, loadingCalendars, selectCalendars, saving }
 
@@ -62,7 +62,7 @@ class _OnboardingViewState extends State<OnboardingView> {
     } catch (e) {
       if (mounted) {
         setState(() {
-          _error = 'Impossible de récupérer vos agendas. Veuillez réessayer.';
+          _error = e.toString();
           _step = _Step.welcome;
         });
       }
@@ -84,7 +84,7 @@ class _OnboardingViewState extends State<OnboardingView> {
       );
       if (!mounted) return;
       Navigator.of(context).pushReplacement(
-        MaterialPageRoute(builder: (_) => const HomeCalendarView()),
+        MaterialPageRoute(builder: (_) => const GroupSetupView()),
       );
     } catch (_) {
       if (mounted) {

@@ -2,8 +2,11 @@ import 'package:flutter/foundation.dart';
 
 import 'google_auth_service.dart';
 import 'calendar_service.dart';
+import 'family_group_service.dart';
 import 'notification_service.dart';
+import 'prefs_service.dart';
 import '../dev_config.dart';
+import '../models/busy_period.dart';
 import '../models/member_availability.dart';
 import '../models/calendar_event.dart';
 
@@ -67,12 +70,75 @@ class AvailabilityNotifier extends ChangeNotifier {
         end: end,
       );
 
-      _availabilities = raw.entries.map((entry) {
-        return MemberAvailability(
-          email: entry.key,
-          events: entry.value,
-        );
-      }).toList(growable: false);
+      final ownEmail = _authService.currentUserEmail ?? '';
+      final ownDisplayName = _authService.currentUserDisplayName ?? ownEmail;
+      final ownEvents =
+          raw.values.expand((e) => e).toList(growable: false);
+
+      final groupCode = await PrefsService().getGroupCode();
+      if (groupCode != null) {
+        // Synchronise les créneaux occupés de l'utilisateur vers Firestore.
+        final ownBusy = ownEvents
+            .map((e) => BusyPeriod(start: e.start, end: e.end))
+            .toList(growable: false);
+
+        try {
+          final groupService = FamilyGroupService();
+          await groupService.syncBusyPeriods(
+            code: groupCode,
+            email: ownEmail,
+            busyPeriods: ownBusy,
+            rangeStart: start,
+            rangeEnd: end,
+          );
+
+          final allMembers = await groupService.getGroupMembers(groupCode);
+          final others = allMembers
+              .where((m) => m.email.toLowerCase() != ownEmail.toLowerCase())
+              .toList(growable: false);
+
+          final othersBusy = others.isNotEmpty
+              ? await groupService.getMembersBusyPeriods(
+                  code: groupCode,
+                  emails: others.map((m) => m.email).toList(),
+                )
+              : <String, List<BusyPeriod>>{};
+
+          _availabilities = [
+            MemberAvailability(
+              email: ownEmail,
+              displayName: ownDisplayName,
+              events: ownEvents,
+            ),
+            ...others.map((m) {
+              final busy =
+                  othersBusy[m.email.toLowerCase()] ?? const [];
+              return MemberAvailability(
+                email: m.email,
+                displayName: m.name,
+                events: busy
+                    .map((bp) =>
+                        CalendarEvent(start: bp.start, end: bp.end))
+                    .toList(growable: false),
+              );
+            }),
+          ];
+        } catch (_) {
+          // Firestore indisponible — affiche uniquement les propres événements.
+          _availabilities = [
+            MemberAvailability(
+              email: ownEmail,
+              displayName: ownDisplayName,
+              events: ownEvents,
+            ),
+          ];
+        }
+      } else {
+        // Pas de groupe configuré : comportement original (une colonne par calendrier).
+        _availabilities = raw.entries.map((entry) {
+          return MemberAvailability(email: entry.key, events: entry.value);
+        }).toList(growable: false);
+      }
 
       _status = AvailabilityStatus.success;
     } on GoogleAuthCancelledException {
@@ -86,46 +152,6 @@ class AvailabilityNotifier extends ChangeNotifier {
       _status = AvailabilityStatus.error;
     } finally {
       notifyListeners();
-    }
-  }
-
-  /// Supprime [event] via l'API Calendar puis recharge la vue courante.
-  ///
-  /// Retourne `true` si la suppression a réussi, `false` sinon.
-  Future<bool> deleteEvent(CalendarEvent event) async {
-    if (!event.canDelete) return false;
-
-    // ── Mode développement : suppression locale ───────────────────────────────
-    if (kDevMode) {
-      _availabilities = _availabilities.map((m) {
-        return m.copyWith(
-          events: m.events.where((e) => e.id != event.id).toList(),
-        );
-      }).toList();
-      notifyListeners();
-      return true;
-    }
-
-    try {
-      final client = await _authService.authenticatedClient();
-      final service = CalendarService(client);
-      await service.deleteEvent(
-        calendarId: event.calendarId!,
-        eventId: event.id!,
-      );
-
-      if (_lastStart != null && _lastEnd != null) {
-        await loadAvailability(
-          calendarIds: _lastCalendarIds,
-          start: _lastStart!,
-          end: _lastEnd!,
-        );
-      }
-      return true;
-    } on GoogleAuthCancelledException {
-      return false;
-    } on CalendarServiceException {
-      return false;
     }
   }
 

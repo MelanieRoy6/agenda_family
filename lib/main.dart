@@ -7,6 +7,7 @@ import 'services/google_auth_service.dart';
 import 'services/availability_notifier.dart';
 import 'services/prefs_service.dart';
 import 'views/home_calendar_view.dart';
+import 'views/group_setup_view.dart';
 import 'views/onboarding_view.dart';
 
 Future<void> main() async {
@@ -50,18 +51,27 @@ class AgendaFamilyApp extends StatelessWidget {
   }
 }
 
-/// Redirige vers [OnboardingView] si la configuration n'existe pas encore,
-/// ou vers [HomeCalendarView] si l'utilisateur a déjà terminé l'onboarding.
+enum _AppRoute { onboarding, groupSetup, home }
+
+/// Redirige selon l'état de configuration :
+///   • Onboarding non terminé → [OnboardingView]
+///   • Onboarding OK, groupe non configuré → [GroupSetupView]
+///   • Tout configuré → [HomeCalendarView]
 class _AppRouter extends StatelessWidget {
   const _AppRouter();
 
+  Future<_AppRoute> _resolveRoute() async {
+    if (kDevMode) return _AppRoute.home;
+    final prefs = PrefsService();
+    if (!await prefs.isOnboardingComplete()) return _AppRoute.onboarding;
+    if (!await prefs.isGroupSetupComplete()) return _AppRoute.groupSetup;
+    return _AppRoute.home;
+  }
+
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<bool>(
-      // En mode dev : court-circuit vers HomeCalendarView sans vérifier les prefs.
-      future: kDevMode
-          ? Future.value(true)
-          : PrefsService().isOnboardingComplete(),
+    return FutureBuilder<_AppRoute>(
+      future: _resolveRoute(),
       builder: (context, snapshot) {
         if (!snapshot.hasData) {
           return const Scaffold(
@@ -69,7 +79,11 @@ class _AppRouter extends StatelessWidget {
             body: Center(child: CircularProgressIndicator()),
           );
         }
-        return snapshot.data! ? const HomeCalendarView() : const OnboardingView();
+        return switch (snapshot.data!) {
+          _AppRoute.onboarding => const OnboardingView(),
+          _AppRoute.groupSetup => const GroupSetupView(),
+          _AppRoute.home => const HomeCalendarView(),
+        };
       },
     );
   }
